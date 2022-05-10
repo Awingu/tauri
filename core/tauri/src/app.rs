@@ -184,6 +184,9 @@ pub enum RunEvent {
   #[cfg(updater)]
   #[cfg_attr(doc_cfg, doc(cfg(feature = "updater")))]
   Updater(crate::UpdaterEvent),
+
+  /// Url event
+  UrlEvent(String),
 }
 
 impl From<EventLoopMessage> for RunEvent {
@@ -1446,6 +1449,7 @@ fn on_event_loop_event<R: Runtime, F: FnMut(&AppHandle<R>, RunEvent) + 'static>(
     RuntimeRunEvent::Resumed => RunEvent::Resumed,
     RuntimeRunEvent::MainEventsCleared => RunEvent::MainEventsCleared,
     RuntimeRunEvent::UserEvent(t) => t.into(),
+    RuntimeRunEvent::UrlEvent(url) => RunEvent::UrlEvent(url),
     _ => unimplemented!(),
   };
 

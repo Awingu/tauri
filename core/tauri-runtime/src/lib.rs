@@ -227,6 +227,8 @@ pub enum RunEvent<T: UserEvent> {
   MainEventsCleared,
   /// A custom event defined by the user.
   UserEvent(T),
+  /// A URL event.
+  UrlEvent(String),
 }
 
 /// Action to take when the event loop is about to exit

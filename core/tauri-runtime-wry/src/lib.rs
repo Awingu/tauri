@@ -2523,6 +2523,10 @@ fn handle_event_loop<T: UserEvent>(
       callback(RunEvent::Exit);
     }
 
+    Event::UrlEvent(url) => {
+      callback(RunEvent::UrlEvent(url))
+    }
+
     #[cfg(feature = "global-shortcut")]
     Event::GlobalShortcutEvent(accelerator_id) => {
       for (id, handler) in &*global_shortcut_manager_handle.listeners.lock().unwrap() {
@@ -2567,6 +2571,9 @@ fn handle_event_loop<T: UserEvent>(
       for handler in window_menu_event_listeners.lock().unwrap().values() {
         handler(&event);
       }
+    }
+    Event::UrlEvent(url) => {
+
     }
     #[cfg(feature = "system-tray")]
     Event::MenuEvent {
