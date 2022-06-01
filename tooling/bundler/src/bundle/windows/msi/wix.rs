@@ -21,6 +21,7 @@ use std::{
   path::{Path, PathBuf},
   process::Command,
 };
+use tauri_utils::resources::resource_relpath;
 use uuid::Uuid;
 use zip::ZipArchive;
 
@@ -378,6 +379,7 @@ pub fn build_wix_app_installer(
       sign(
         &file_path,
         &SignParams {
+          product_name: settings.product_name().into(),
           digest_algorithm: settings
             .windows()
             .digest_algorithm
@@ -566,6 +568,17 @@ pub fn build_wix_app_installer(
   create_dir_all(&output_path)?;
 
   if enable_elevated_update_task {
+    data.insert(
+      "msiexec_args",
+      to_json(
+        settings
+          .updater()
+          .and_then(|updater| updater.msiexec_args.clone())
+          .map(|args| args.join(" "))
+          .unwrap_or_else(|| "/passive".to_string()),
+      ),
+    );
+
     // Create the update task XML
     let mut skip_uac_task = Handlebars::new();
     let xml = include_str!("../templates/update-task.xml");
@@ -787,6 +800,13 @@ fn generate_resource_data(settings: &Settings) -> crate::Result<ResourceMap> {
       .into_string()
       .expect("failed to read resource path");
 
+    // In some glob resource paths like `assets/**/*` a file might appear twice
+    // because the `tauri_utils::resources::ResourcePaths` iterator also reads a directory
+    // when it finds one. So we must check it before processing the file.
+    if added_resources.contains(&resource_path) {
+      continue;
+    }
+
     added_resources.push(resource_path.clone());
 
     let resource_entry = ResourceFile {
@@ -796,13 +816,10 @@ fn generate_resource_data(settings: &Settings) -> crate::Result<ResourceMap> {
     };
 
     // split the resource path directories
-    let components_count = src.components().count();
-    let directories = src
+    let target_path = resource_relpath(&src);
+    let components_count = target_path.components().count();
+    let directories = target_path
       .components()
-      .filter(|component| {
-        let comp = component.as_os_str();
-        comp != "." && comp != ".."
-      })
       .take(components_count - 1) // the last component is the file
       .collect::<Vec<_>>();
 

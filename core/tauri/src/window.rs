@@ -94,21 +94,11 @@ impl Monitor {
   }
 }
 
-/// A runtime handle or dispatch used to create new windows.
-#[derive(Debug, Clone)]
-pub enum RuntimeHandleOrDispatch<R: Runtime> {
-  /// Handle to the running [`Runtime`].
-  RuntimeHandle(R::Handle),
-
-  /// A dispatcher to the running [`Runtime`].
-  Dispatch(R::Dispatcher),
-}
-
 /// A builder for a webview window managed by Tauri.
 #[default_runtime(crate::Wry, wry)]
-pub struct WindowBuilder<R: Runtime> {
+pub struct WindowBuilder<'a, R: Runtime> {
   manager: WindowManager<R>,
-  runtime: RuntimeHandleOrDispatch<R>,
+  runtime: RuntimeOrDispatch<'a, R>,
   app_handle: AppHandle<R>,
   label: String,
   pub(crate) window_builder: <R::Dispatcher as Dispatch<EventLoopMessage>>::WindowBuilder,
@@ -116,11 +106,10 @@ pub struct WindowBuilder<R: Runtime> {
   web_resource_request_handler: Option<Box<dyn Fn(&HttpRequest, &mut HttpResponse) + Send + Sync>>,
 }
 
-impl<R: Runtime> fmt::Debug for WindowBuilder<R> {
+impl<'a, R: Runtime> fmt::Debug for WindowBuilder<'a, R> {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.debug_struct("WindowBuilder")
       .field("manager", &self.manager)
-      .field("runtime", &self.runtime)
       .field("app_handle", &self.app_handle)
       .field("label", &self.label)
       .field("window_builder", &self.window_builder)
@@ -129,31 +118,10 @@ impl<R: Runtime> fmt::Debug for WindowBuilder<R> {
   }
 }
 
-impl<R: Runtime> ManagerBase<R> for WindowBuilder<R> {
-  fn manager(&self) -> &WindowManager<R> {
-    &self.manager
-  }
-
-  fn runtime(&self) -> RuntimeOrDispatch<'_, R> {
-    match &self.runtime {
-      RuntimeHandleOrDispatch::RuntimeHandle(r) => RuntimeOrDispatch::RuntimeHandle(r.clone()),
-      RuntimeHandleOrDispatch::Dispatch(d) => RuntimeOrDispatch::Dispatch(d.clone()),
-    }
-  }
-
-  fn managed_app_handle(&self) -> AppHandle<R> {
-    self.app_handle.clone()
-  }
-}
-
-impl<R: Runtime> WindowBuilder<R> {
+impl<'a, R: Runtime> WindowBuilder<'a, R> {
   /// Initializes a webview window builder with the given window label and URL to load on the webview.
-  pub fn new<M: Manager<R>, L: Into<String>>(manager: &M, label: L, url: WindowUrl) -> Self {
-    let runtime = match manager.runtime() {
-      RuntimeOrDispatch::Runtime(r) => RuntimeHandleOrDispatch::RuntimeHandle(r.handle()),
-      RuntimeOrDispatch::RuntimeHandle(h) => RuntimeHandleOrDispatch::RuntimeHandle(h),
-      RuntimeOrDispatch::Dispatch(d) => RuntimeHandleOrDispatch::Dispatch(d),
-    };
+  pub fn new<M: Manager<R>, L: Into<String>>(manager: &'a M, label: L, url: WindowUrl) -> Self {
+    let runtime = manager.runtime();
     let app_handle = manager.app_handle();
     Self {
       manager: manager.manager().clone(),
@@ -219,25 +187,21 @@ impl<R: Runtime> WindowBuilder<R> {
       self.webview_attributes.clone(),
       self.label.clone(),
     )?;
-    let labels = self.manager().labels().into_iter().collect::<Vec<_>>();
-    let pending = self.manager().prepare_window(
-      self.managed_app_handle(),
+    let labels = self.manager.labels().into_iter().collect::<Vec<_>>();
+    let pending = self.manager.prepare_window(
+      self.app_handle.clone(),
       pending,
       &labels,
       web_resource_request_handler,
     )?;
-    let window = match self.runtime() {
+    let window = match &mut self.runtime {
       RuntimeOrDispatch::Runtime(runtime) => runtime.create_window(pending),
       RuntimeOrDispatch::RuntimeHandle(handle) => handle.create_window(pending),
-      RuntimeOrDispatch::Dispatch(mut dispatcher) => dispatcher.create_window(pending),
+      RuntimeOrDispatch::Dispatch(dispatcher) => dispatcher.create_window(pending),
     }
-    .map(|window| {
-      self
-        .manager()
-        .attach_window(self.managed_app_handle(), window)
-    })?;
+    .map(|window| self.manager.attach_window(self.app_handle.clone(), window))?;
 
-    self.manager().emit_filter(
+    self.manager.emit_filter(
       "tauri://window-created",
       None,
       Some(WindowCreatedEvent {
@@ -609,6 +573,7 @@ impl PlatformWebview {
   }
 }
 
+/// APIs specific to the wry runtime.
 #[cfg(feature = "wry")]
 impl Window<crate::Wry> {
   /// Executes the closure accessing the platform's webview handle.
@@ -667,6 +632,7 @@ impl Window<crate::Wry> {
   }
 }
 
+/// Base window functions.
 impl<R: Runtime> Window<R> {
   /// Create a new window that is attached to the manager.
   pub(crate) fn new(
@@ -684,12 +650,12 @@ impl<R: Runtime> Window<R> {
   /// Initializes a webview window builder with the given window label and URL to load on the webview.
   ///
   /// Data URLs are only supported with the `window-data-url` feature flag.
-  pub fn builder<M: Manager<R>, L: Into<String>>(
-    manager: &M,
+  pub fn builder<'a, M: Manager<R>, L: Into<String>>(
+    manager: &'a M,
     label: L,
     url: WindowUrl,
-  ) -> WindowBuilder<R> {
-    WindowBuilder::<R>::new(manager, label.into(), url)
+  ) -> WindowBuilder<'a, R> {
+    WindowBuilder::<'a, R>::new(manager, label.into(), url)
   }
 
   pub(crate) fn invoke_responder(&self) -> Arc<InvokeResponder<R>> {
@@ -710,123 +676,9 @@ impl<R: Runtime> Window<R> {
       .map_err(Into::into)
   }
 
-  /// How to handle this window receiving an [`InvokeMessage`].
-  pub fn on_message(self, payload: InvokePayload) -> crate::Result<()> {
-    let manager = self.manager.clone();
-    match payload.cmd.as_str() {
-      "__initialized" => {
-        let payload: PageLoadPayload = serde_json::from_value(payload.inner)?;
-        manager.run_on_page_load(self, payload);
-      }
-      _ => {
-        let message = InvokeMessage::new(
-          self.clone(),
-          manager.state(),
-          payload.cmd.to_string(),
-          payload.inner,
-        );
-        let resolver = InvokeResolver::new(self, payload.callback, payload.error);
-
-        let invoke = Invoke { message, resolver };
-        if let Some(module) = &payload.tauri_module {
-          crate::endpoints::handle(
-            module.to_string(),
-            invoke,
-            manager.config(),
-            manager.package_info(),
-          );
-        } else if payload.cmd.starts_with("plugin:") {
-          manager.extend_api(invoke);
-        } else {
-          manager.run_invoke_handler(invoke);
-        }
-      }
-    }
-
-    Ok(())
-  }
-
   /// The label of this window.
   pub fn label(&self) -> &str {
     &self.window.label
-  }
-
-  /// Emits an event to both the JavaScript and the Rust listeners.
-  pub fn emit_and_trigger<S: Serialize + Clone>(
-    &self,
-    event: &str,
-    payload: S,
-  ) -> crate::Result<()> {
-    self.trigger(event, Some(serde_json::to_string(&payload)?));
-    self.emit(event, payload)
-  }
-
-  pub(crate) fn emit_internal<S: Serialize>(
-    &self,
-    event: &str,
-    source_window_label: Option<&str>,
-    payload: S,
-  ) -> crate::Result<()> {
-    self.eval(&format!(
-      "window['{}']({{event: {}, windowLabel: {}, payload: {}}})",
-      self.manager.event_emit_function_name(),
-      serde_json::to_string(event)?,
-      serde_json::to_string(&source_window_label)?,
-      serde_json::to_value(payload)?,
-    ))?;
-    Ok(())
-  }
-
-  /// Emits an event to the JavaScript listeners on the current window.
-  ///
-  /// The event is only delivered to listeners that used the `WebviewWindow#listen` method on the @tauri-apps/api `window` module.
-  pub fn emit<S: Serialize + Clone>(&self, event: &str, payload: S) -> crate::Result<()> {
-    self
-      .manager
-      .emit_filter(event, Some(self.label()), payload, |w| {
-        w.has_js_listener(None, event) || w.has_js_listener(Some(self.label().into()), event)
-      })?;
-    Ok(())
-  }
-
-  /// Listen to an event on this window.
-  ///
-  /// This listener only receives events that are triggered using the
-  /// [`trigger`](Window#method.trigger) and [`emit_and_trigger`](Window#method.emit_and_trigger) methods or
-  /// the `appWindow.emit` function from the @tauri-apps/api `window` module.
-  pub fn listen<F>(&self, event: impl Into<String>, handler: F) -> EventHandler
-  where
-    F: Fn(Event) + Send + 'static,
-  {
-    let label = self.window.label.clone();
-    self.manager.listen(event.into(), Some(label), handler)
-  }
-
-  /// Unlisten to an event on this window.
-  pub fn unlisten(&self, handler_id: EventHandler) {
-    self.manager.unlisten(handler_id)
-  }
-
-  /// Listen to an event on this window a single time.
-  pub fn once<F>(&self, event: impl Into<String>, handler: F) -> EventHandler
-  where
-    F: FnOnce(Event) + Send + 'static,
-  {
-    let label = self.window.label.clone();
-    self.manager.once(event.into(), Some(label), handler)
-  }
-
-  /// Triggers an event to the Rust listeners on this window.
-  ///
-  /// The event is only delivered to listeners that used the [`listen`](Window#method.listen) method.
-  pub fn trigger(&self, event: &str, data: Option<String>) {
-    let label = self.window.label.clone();
-    self.manager.trigger(event, Some(label), data)
-  }
-
-  /// Evaluates JavaScript on this window.
-  pub fn eval(&self, js: &str) -> crate::Result<()> {
-    self.window.dispatcher.eval_script(js).map_err(Into::into)
   }
 
   /// Registers a window event listener.
@@ -851,147 +703,10 @@ impl<R: Runtime> Window<R> {
       })
     })
   }
+}
 
-  pub(crate) fn register_js_listener(&self, window_label: Option<String>, event: String, id: u64) {
-    self
-      .window
-      .js_event_listeners
-      .lock()
-      .unwrap()
-      .entry(JsEventListenerKey {
-        window_label,
-        event,
-      })
-      .or_insert_with(Default::default)
-      .insert(id);
-  }
-
-  pub(crate) fn unregister_js_listener(&self, id: u64) {
-    let mut empty = None;
-    let mut js_listeners = self.window.js_event_listeners.lock().unwrap();
-    for (key, ids) in js_listeners.iter_mut() {
-      if ids.contains(&id) {
-        ids.remove(&id);
-        if ids.is_empty() {
-          empty.replace(key.clone());
-        }
-        break;
-      }
-    }
-
-    if let Some(key) = empty {
-      js_listeners.remove(&key);
-    }
-  }
-
-  /// Whether this window registered a listener to an event from the given window and event name.
-  pub(crate) fn has_js_listener(&self, window_label: Option<String>, event: &str) -> bool {
-    self
-      .window
-      .js_event_listeners
-      .lock()
-      .unwrap()
-      .contains_key(&JsEventListenerKey {
-        window_label,
-        event: event.into(),
-      })
-  }
-
-  /// Opens the developer tools window (Web Inspector).
-  /// The devtools is only enabled on debug builds or with the `devtools` feature flag.
-  ///
-  /// ## Platform-specific
-  ///
-  /// - **macOS:** This is a private API on macOS,
-  /// so you cannot use this if your application will be published on the App Store.
-  ///
-  /// # Examples
-  ///
-  /// ```rust,no_run
-  /// use tauri::Manager;
-  /// tauri::Builder::default()
-  ///   .setup(|app| {
-  ///     #[cfg(debug_assertions)]
-  ///     app.get_window("main").unwrap().open_devtools();
-  ///     Ok(())
-  ///   });
-  /// ```
-  #[cfg(any(debug_assertions, feature = "devtools"))]
-  #[cfg_attr(doc_cfg, doc(cfg(any(debug_assertions, feature = "devtools"))))]
-  pub fn open_devtools(&self) {
-    self.window.dispatcher.open_devtools();
-  }
-
-  /// Closes the developer tools window (Web Inspector).
-  /// The devtools is only enabled on debug builds or with the `devtools` feature flag.
-  ///
-  /// ## Platform-specific
-  ///
-  /// - **macOS:** This is a private API on macOS,
-  /// so you cannot use this if your application will be published on the App Store.
-  /// - **Windows:** Unsupported.
-  ///
-  /// # Examples
-  ///
-  /// ```rust,no_run
-  /// use tauri::Manager;
-  /// tauri::Builder::default()
-  ///   .setup(|app| {
-  ///     #[cfg(debug_assertions)]
-  ///     {
-  ///       let window = app.get_window("main").unwrap();
-  ///       window.open_devtools();
-  ///       std::thread::spawn(move || {
-  ///         std::thread::sleep(std::time::Duration::from_secs(10));
-  ///         window.close_devtools();
-  ///       });
-  ///     }
-  ///     Ok(())
-  ///   });
-  /// ```
-  #[cfg(any(debug_assertions, feature = "devtools"))]
-  #[cfg_attr(doc_cfg, doc(cfg(any(debug_assertions, feature = "devtools"))))]
-  pub fn close_devtools(&self) {
-    self.window.dispatcher.close_devtools();
-  }
-
-  /// Checks if the developer tools window (Web Inspector) is opened.
-  /// The devtools is only enabled on debug builds or with the `devtools` feature flag.
-  ///
-  /// ## Platform-specific
-  ///
-  /// - **macOS:** This is a private API on macOS,
-  /// so you cannot use this if your application will be published on the App Store.
-  /// - **Windows:** Unsupported.
-  ///
-  /// # Examples
-  ///
-  /// ```rust,no_run
-  /// use tauri::Manager;
-  /// tauri::Builder::default()
-  ///   .setup(|app| {
-  ///     #[cfg(debug_assertions)]
-  ///     {
-  ///       let window = app.get_window("main").unwrap();
-  ///       if !window.is_devtools_open() {
-  ///         window.open_devtools();
-  ///       }
-  ///     }
-  ///     Ok(())
-  ///   });
-  /// ```
-  #[cfg(any(debug_assertions, feature = "devtools"))]
-  #[cfg_attr(doc_cfg, doc(cfg(any(debug_assertions, feature = "devtools"))))]
-  pub fn is_devtools_open(&self) -> bool {
-    self
-      .window
-      .dispatcher
-      .is_devtools_open()
-      .unwrap_or_default()
-  }
-
-  // Getters
-
+/// Window getters.
+impl<R: Runtime> Window<R> {
   /// Gets a handle to the window menu.
   pub fn menu_handle(&self) -> MenuHandle<R> {
     MenuHandle {
@@ -1122,9 +837,10 @@ impl<R: Runtime> Window<R> {
   pub fn theme(&self) -> crate::Result<Theme> {
     self.window.dispatcher.theme().map_err(Into::into)
   }
+}
 
-  // Setters
-
+/// Window setters and actions.
+impl<R: Runtime> Window<R> {
   /// Centers the window.
   pub fn center(&self) -> crate::Result<()> {
     self.window.dispatcher.center().map_err(Into::into)
@@ -1361,6 +1077,264 @@ impl<R: Runtime> Window<R> {
   /// Starts dragging the window.
   pub fn start_dragging(&self) -> crate::Result<()> {
     self.window.dispatcher.start_dragging().map_err(Into::into)
+  }
+}
+
+/// Webview APIs.
+impl<R: Runtime> Window<R> {
+  /// Handles this window receiving an [`InvokeMessage`].
+  pub fn on_message(self, payload: InvokePayload) -> crate::Result<()> {
+    let manager = self.manager.clone();
+    match payload.cmd.as_str() {
+      "__initialized" => {
+        let payload: PageLoadPayload = serde_json::from_value(payload.inner)?;
+        manager.run_on_page_load(self, payload);
+      }
+      _ => {
+        let message = InvokeMessage::new(
+          self.clone(),
+          manager.state(),
+          payload.cmd.to_string(),
+          payload.inner,
+        );
+        let resolver = InvokeResolver::new(self, payload.callback, payload.error);
+
+        let invoke = Invoke { message, resolver };
+        if let Some(module) = &payload.tauri_module {
+          crate::endpoints::handle(
+            module.to_string(),
+            invoke,
+            manager.config(),
+            manager.package_info(),
+          );
+        } else if payload.cmd.starts_with("plugin:") {
+          manager.extend_api(invoke);
+        } else {
+          manager.run_invoke_handler(invoke);
+        }
+      }
+    }
+
+    Ok(())
+  }
+
+  /// Evaluates JavaScript on this window.
+  pub fn eval(&self, js: &str) -> crate::Result<()> {
+    self.window.dispatcher.eval_script(js).map_err(Into::into)
+  }
+
+  pub(crate) fn register_js_listener(&self, window_label: Option<String>, event: String, id: u64) {
+    self
+      .window
+      .js_event_listeners
+      .lock()
+      .unwrap()
+      .entry(JsEventListenerKey {
+        window_label,
+        event,
+      })
+      .or_insert_with(Default::default)
+      .insert(id);
+  }
+
+  pub(crate) fn unregister_js_listener(&self, id: u64) {
+    let mut empty = None;
+    let mut js_listeners = self.window.js_event_listeners.lock().unwrap();
+    for (key, ids) in js_listeners.iter_mut() {
+      if ids.contains(&id) {
+        ids.remove(&id);
+        if ids.is_empty() {
+          empty.replace(key.clone());
+        }
+        break;
+      }
+    }
+
+    if let Some(key) = empty {
+      js_listeners.remove(&key);
+    }
+  }
+
+  /// Whether this window registered a listener to an event from the given window and event name.
+  pub(crate) fn has_js_listener(&self, window_label: Option<String>, event: &str) -> bool {
+    self
+      .window
+      .js_event_listeners
+      .lock()
+      .unwrap()
+      .contains_key(&JsEventListenerKey {
+        window_label,
+        event: event.into(),
+      })
+  }
+
+  /// Opens the developer tools window (Web Inspector).
+  /// The devtools is only enabled on debug builds or with the `devtools` feature flag.
+  ///
+  /// ## Platform-specific
+  ///
+  /// - **macOS:** This is a private API on macOS,
+  /// so you cannot use this if your application will be published on the App Store.
+  ///
+  /// # Examples
+  ///
+  /// ```rust,no_run
+  /// use tauri::Manager;
+  /// tauri::Builder::default()
+  ///   .setup(|app| {
+  ///     #[cfg(debug_assertions)]
+  ///     app.get_window("main").unwrap().open_devtools();
+  ///     Ok(())
+  ///   });
+  /// ```
+  #[cfg(any(debug_assertions, feature = "devtools"))]
+  #[cfg_attr(doc_cfg, doc(cfg(any(debug_assertions, feature = "devtools"))))]
+  pub fn open_devtools(&self) {
+    self.window.dispatcher.open_devtools();
+  }
+
+  /// Closes the developer tools window (Web Inspector).
+  /// The devtools is only enabled on debug builds or with the `devtools` feature flag.
+  ///
+  /// ## Platform-specific
+  ///
+  /// - **macOS:** This is a private API on macOS,
+  /// so you cannot use this if your application will be published on the App Store.
+  /// - **Windows:** Unsupported.
+  ///
+  /// # Examples
+  ///
+  /// ```rust,no_run
+  /// use tauri::Manager;
+  /// tauri::Builder::default()
+  ///   .setup(|app| {
+  ///     #[cfg(debug_assertions)]
+  ///     {
+  ///       let window = app.get_window("main").unwrap();
+  ///       window.open_devtools();
+  ///       std::thread::spawn(move || {
+  ///         std::thread::sleep(std::time::Duration::from_secs(10));
+  ///         window.close_devtools();
+  ///       });
+  ///     }
+  ///     Ok(())
+  ///   });
+  /// ```
+  #[cfg(any(debug_assertions, feature = "devtools"))]
+  #[cfg_attr(doc_cfg, doc(cfg(any(debug_assertions, feature = "devtools"))))]
+  pub fn close_devtools(&self) {
+    self.window.dispatcher.close_devtools();
+  }
+
+  /// Checks if the developer tools window (Web Inspector) is opened.
+  /// The devtools is only enabled on debug builds or with the `devtools` feature flag.
+  ///
+  /// ## Platform-specific
+  ///
+  /// - **macOS:** This is a private API on macOS,
+  /// so you cannot use this if your application will be published on the App Store.
+  /// - **Windows:** Unsupported.
+  ///
+  /// # Examples
+  ///
+  /// ```rust,no_run
+  /// use tauri::Manager;
+  /// tauri::Builder::default()
+  ///   .setup(|app| {
+  ///     #[cfg(debug_assertions)]
+  ///     {
+  ///       let window = app.get_window("main").unwrap();
+  ///       if !window.is_devtools_open() {
+  ///         window.open_devtools();
+  ///       }
+  ///     }
+  ///     Ok(())
+  ///   });
+  /// ```
+  #[cfg(any(debug_assertions, feature = "devtools"))]
+  #[cfg_attr(doc_cfg, doc(cfg(any(debug_assertions, feature = "devtools"))))]
+  pub fn is_devtools_open(&self) -> bool {
+    self
+      .window
+      .dispatcher
+      .is_devtools_open()
+      .unwrap_or_default()
+  }
+}
+
+/// Event system APIs.
+impl<R: Runtime> Window<R> {
+  /// Emits an event to both the JavaScript and the Rust listeners.
+  pub fn emit_and_trigger<S: Serialize + Clone>(
+    &self,
+    event: &str,
+    payload: S,
+  ) -> crate::Result<()> {
+    self.trigger(event, Some(serde_json::to_string(&payload)?));
+    self.emit(event, payload)
+  }
+
+  pub(crate) fn emit_internal<S: Serialize>(
+    &self,
+    event: &str,
+    source_window_label: Option<&str>,
+    payload: S,
+  ) -> crate::Result<()> {
+    self.eval(&format!(
+      "window['{}']({{event: {}, windowLabel: {}, payload: {}}})",
+      self.manager.event_emit_function_name(),
+      serde_json::to_string(event)?,
+      serde_json::to_string(&source_window_label)?,
+      serde_json::to_value(payload)?,
+    ))?;
+    Ok(())
+  }
+
+  /// Emits an event to the JavaScript listeners on the current window.
+  ///
+  /// The event is only delivered to listeners that used the `WebviewWindow#listen` method on the @tauri-apps/api `window` module.
+  pub fn emit<S: Serialize + Clone>(&self, event: &str, payload: S) -> crate::Result<()> {
+    self
+      .manager
+      .emit_filter(event, Some(self.label()), payload, |w| {
+        w.has_js_listener(None, event) || w.has_js_listener(Some(self.label().into()), event)
+      })?;
+    Ok(())
+  }
+
+  /// Listen to an event on this window.
+  ///
+  /// This listener only receives events that are triggered using the
+  /// [`trigger`](Window#method.trigger) and [`emit_and_trigger`](Window#method.emit_and_trigger) methods or
+  /// the `appWindow.emit` function from the @tauri-apps/api `window` module.
+  pub fn listen<F>(&self, event: impl Into<String>, handler: F) -> EventHandler
+  where
+    F: Fn(Event) + Send + 'static,
+  {
+    let label = self.window.label.clone();
+    self.manager.listen(event.into(), Some(label), handler)
+  }
+
+  /// Unlisten to an event on this window.
+  pub fn unlisten(&self, handler_id: EventHandler) {
+    self.manager.unlisten(handler_id)
+  }
+
+  /// Listen to an event on this window a single time.
+  pub fn once<F>(&self, event: impl Into<String>, handler: F) -> EventHandler
+  where
+    F: FnOnce(Event) + Send + 'static,
+  {
+    let label = self.window.label.clone();
+    self.manager.once(event.into(), Some(label), handler)
+  }
+
+  /// Triggers an event to the Rust listeners on this window.
+  ///
+  /// The event is only delivered to listeners that used the [`listen`](Window#method.listen) method.
+  pub fn trigger(&self, event: &str, data: Option<String>) {
+    let label = self.window.label.clone();
+    self.manager.trigger(event, Some(label), data)
   }
 }
 

@@ -2,7 +2,7 @@ workspace = { }
 
 [package]
 name = "tauri-bundler"
-version = "1.0.0-rc.6"
+version = "1.0.0-rc.9"
 authors = [
   "George Burton <burtonageo@gmail.com>",
   "Tauri Programme within The Commons Conservancy"
@@ -22,7 +22,7 @@ exclude = [
 ]
 
 [dependencies]
-tauri-utils = { version = "1.0.0-rc.6", path = "../../core/tauri-utils", features = [ "resources" ] }
+tauri-utils = { version = "1.0.0-rc.8", path = "../../core/tauri-utils", features = [ "resources" ] }
 icns = "0.3"
 image = "0.24.2"
 libflate = "1.2"
@@ -34,7 +34,7 @@ strsim = "0.10.0"
 tar = "0.4.38"
 toml = "0.5.9"
 walkdir = "2"
-handlebars = "4.2"
+handlebars = "4.3"
 tempfile = "3.3.0"
 log = { version = "0.4.17", features = [ "kv_unstable" ] }
 

@@ -52,7 +52,7 @@ pub struct Options {
   #[clap(short, long)]
   target: Option<String>,
   /// List of cargo features to activate
-  #[clap(short, long)]
+  #[clap(short, long, multiple_occurrences(true), multiple_values(true))]
   features: Option<Vec<String>>,
   /// Exit on panic
   #[clap(short, long)]
@@ -296,7 +296,7 @@ fn check_for_updates() -> Result<()> {
     let upstream = semver::Version::parse(&upstream_version)?;
     if current < upstream {
       println!(
-        "🚀 A new version of Tauri CLI is avaliable! [{}]",
+        "🚀 A new version of Tauri CLI is available! [{}]",
         upstream.to_string()
       );
     };

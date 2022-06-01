@@ -1,5 +1,17 @@
 # Changelog
 
+## \[1.0.0-rc.8]
+
+- **Breaking change:** `PackageInfo::version` is now a `semver::Version` instead of a `String`.
+  - [2badbd2d](https://www.github.com/tauri-apps/tauri/commit/2badbd2d7ed51bf33c1b547b4c837b600574bd4a) refactor: force semver versions, change updater `should_install` sig ([#4215](https://www.github.com/tauri-apps/tauri/pull/4215)) on 2022-05-25
+  - [a7388e23](https://www.github.com/tauri-apps/tauri/commit/a7388e23c3b9019d48b078cae00a75c74d74d11b) fix(ci): adjust change file to include tauri-utils and tauri-codegen on 2022-05-27
+
+## \[1.0.0-rc.7]
+
+- Allow configuring the display options for the MSI execution allowing quieter updates.
+  - Bumped due to a bump in tauri-utils.
+  - [9f2c3413](https://www.github.com/tauri-apps/tauri/commit/9f2c34131952ea83c3f8e383bc3cec7e1450429f) feat(core): configure msiexec display options, closes [#3951](https://www.github.com/tauri-apps/tauri/pull/3951) ([#4061](https://www.github.com/tauri-apps/tauri/pull/4061)) on 2022-05-15
+
 ## \[1.0.0-rc.6]
 
 - The `dangerous_allow_asset_csp_modification` configuration value has been changed to allow a list of CSP directives to disable.

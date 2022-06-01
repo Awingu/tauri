@@ -1,5 +1,25 @@
 # Changelog
 
+## \[1.0.0-rc.12]
+
+- Statically link the Visual C++ runtime instead of using a merge module on the installer.
+  - [bb061509](https://www.github.com/tauri-apps/tauri/commit/bb061509fb674bef86ecbc1de3aa8f3e367a9907) refactor(core): statically link vcruntime, closes [#4122](https://www.github.com/tauri-apps/tauri/pull/4122) ([#4227](https://www.github.com/tauri-apps/tauri/pull/4227)) on 2022-05-27
+
+## \[1.0.0-rc.11]
+
+- Create `dev` cfg alias.
+  - [9cdcf9b3](https://www.github.com/tauri-apps/tauri/commit/9cdcf9b3a8fa27612b3156c1702a4e776627e869) feat(build): create `dev` alias ([#4212](https://www.github.com/tauri-apps/tauri/pull/4212)) on 2022-05-25
+
+## \[1.0.0-rc.10]
+
+- Delete existing sidecar before copying new one.
+  - [a737f25c](https://www.github.com/tauri-apps/tauri/commit/a737f25c1078083e0b0f7f338f5c958b86914323) fix(tauri-build): delete existing sidecar file, closes [#4134](https://www.github.com/tauri-apps/tauri/pull/4134) ([#4167](https://www.github.com/tauri-apps/tauri/pull/4167)) on 2022-05-18
+
+## \[1.0.0-rc.9]
+
+- Search `tauri.conf.json > tauri > bundle > icons` for a `.ico` file for the window icon instead of simple default `icons/icon.ico` when `WindowsAttributes::window_icon_path` is not set.
+  - [bad85a1f](https://www.github.com/tauri-apps/tauri/commit/bad85a1f11da03421401080531275ba201480cd1) feat(build): find .ico in config instead of default `icons/icon.ico` ([#4115](https://www.github.com/tauri-apps/tauri/pull/4115)) on 2022-05-13
+
 ## \[1.0.0-rc.8]
 
 - Properly set file version information for the Windows executable.

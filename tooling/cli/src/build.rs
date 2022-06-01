@@ -32,11 +32,11 @@ pub struct Options {
   /// Note that compiling an universal macOS application requires both `aarch64-apple-darwin` and `x86_64-apple-darwin` targets to be installed.
   #[clap(short, long)]
   target: Option<String>,
-  /// List of cargo features to activate
-  #[clap(short, long)]
+  /// Space or comma separated list of features to activate
+  #[clap(short, long, multiple_occurrences(true), multiple_values(true))]
   features: Option<Vec<String>>,
-  /// List of bundles to package
-  #[clap(short, long)]
+  /// Space or comma separated list of bundles to package
+  #[clap(short, long, multiple_occurrences(true), multiple_values(true))]
   bundles: Option<Vec<String>>,
   /// JSON string or path to JSON file to merge with tauri.conf.json
   #[clap(short, long)]
@@ -240,46 +240,12 @@ pub fn command(options: Options) -> Result<()> {
   }
 
   if config_.tauri.bundle.active {
-    // move merge modules to the out dir so the bundler can load it
-    #[cfg(windows)]
-    {
-      let target = options
-        .target
-        .clone()
-        .unwrap_or_else(|| std::env::consts::ARCH.into());
-      let arch = if target.starts_with("x86_64") {
-        "x86_64"
-      } else if target.starts_with('i') || target.starts_with("x86") {
-        "x86"
-      } else if target.starts_with("arm") {
-        "arm"
-      } else if target.starts_with("aarch64") {
-        "aarch64"
-      } else {
-        panic!(
-          "Unexpected target architecture {}",
-          target.split('_').next().unwrap()
-        )
-      };
-      let (filename, vcruntime_msm) = if arch == "x86" {
-        let _ = std::fs::remove_file(out_dir.join("Microsoft_VC142_CRT_x64.msm"));
-        (
-          "Microsoft_VC142_CRT_x86.msm",
-          include_bytes!("../MergeModules/Microsoft_VC142_CRT_x86.msm").to_vec(),
-        )
-      } else {
-        let _ = std::fs::remove_file(out_dir.join("Microsoft_VC142_CRT_x86.msm"));
-        (
-          "Microsoft_VC142_CRT_x64.msm",
-          include_bytes!("../MergeModules/Microsoft_VC142_CRT_x64.msm").to_vec(),
-        )
-      };
-      std::fs::write(out_dir.join(filename), vcruntime_msm)?;
-    }
-
     let package_types = if let Some(names) = options.bundles {
       let mut types = vec![];
-      for name in names {
+      for name in names
+        .into_iter()
+        .flat_map(|n| n.split(',').map(|s| s.to_string()).collect::<Vec<String>>())
+      {
         if name == "none" {
           break;
         }
